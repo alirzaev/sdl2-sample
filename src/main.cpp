@@ -1,140 +1,246 @@
 #include <iostream>
-#include <fstream>
-#include <functional>
+#include <limits>
 #include <memory>
 #include <vector>
-#include <cmath>
 #include <SDL.h>
-#include "CounterWidget.h"
 
-std::vector<Digit> LoadDigits() {
-	std::ifstream file("points");
-	std::vector<Digit> digits(2);
+#include "widget.h"
 
-	for (int k = 0; k < 2; ++k) {
-		int n; file >> n;
-		digits[k].resize(n);
-		for (int i = 0; i < n; ++i) {
-			for (int j = 0; j < 4; ++j) {
-				int x, y; file >> x >> y;
-				x -= 180, y -= 120;
-				digits[k][i].emplace_back(x, y);
-			}
-		}
-	}
+using namespace sample;
 
-	return digits;
+std::vector<symbol> create_digits() {
+    std::vector<symbol> digits = {
+            // symbol "0"
+            symbol{
+                    // first curve
+                    bezier_curve{{
+                                         {0, 90},
+                                         {0, 0},
+                                         {90, 0},
+                                         {90, 90}
+                                 }},
+                    // second curve
+                    bezier_curve{{
+                                         {90, 90},
+                                         {90, 180},
+                                         {0, 180},
+                                         {0, 90}
+                                 }}
+            },
+            // symbol "1"
+            symbol{
+                    // first curve
+                    bezier_curve{{
+                                         {0, 90},
+                                         {60, 75},
+                                         {75, 60},
+                                         {90, 0}
+                                 }},
+                    // second curve
+                    bezier_curve{{
+                                         {90, 180},
+                                         {75, 120},
+                                         {75, 60},
+                                         {90, 0},
+                                 }}
+            }
+    };
+
+    int max_x = 0, max_y = 0;
+
+    for (const auto &symbol: digits) {
+        for (const auto &curve: symbol) {
+            for (auto [x, y]: curve) {
+                max_x = std::max(max_x, x);
+                max_y = std::max(max_y, y);
+            }
+        }
+    }
+
+    for (auto &symbol: digits) {
+        for (auto &curve: symbol) {
+            for (auto &[x, y]: curve) {
+                x -= max_x;
+                y -= max_y;
+            }
+        }
+    }
+
+    return digits;
 }
 
-std::vector<Digit> MakeFrames(const Digit& first, const Digit& second) {
-	std::vector<Digit> frames(11);
-	for (int i = 0; i < 11; ++i) {
-		frames[i].resize(2);
-		for (int j = 0; j < 2; ++j) {
-			frames[i][j].resize(4);
-			for (int p = 0; p < 4; ++p) {
-				frames[i][j][p] = pii(
-					first[j][p].first + (second[j][p].first - first[j][p].first) * i / 10,
-					first[j][p].second + (second[j][p].second - first[j][p].second) * i / 10
-					);
-			}
-		}
-	}
+std::vector<symbol> make_transition_frames(const symbol &from, const symbol &to) {
+    if (from == to) {
+        return {11, from};
+    }
 
-	return frames;
+    std::vector<symbol> frames(11);
+
+    for (int i = 0; i < 11; ++i) {
+        for (int j = 0; j < 2; ++j) {
+            for (int p = 0; p < 4; ++p) {
+                frames[i][j][p] = {
+                        from[j][p].first + (to[j][p].first - from[j][p].first) * i / 10,
+                        from[j][p].second + (to[j][p].second - from[j][p].second) * i / 10
+                };
+            }
+        }
+    }
+
+    return frames;
 }
 
-void ClearRender(const ren_ptr& renderer) {
-	SDL_SetRenderDrawColor(renderer.get(), 0xff, 0xff, 0xff, 0);
-	SDL_RenderClear(renderer.get());
+template<class T>
+std::vector<std::vector<T>> combine(const std::initializer_list<std::vector<T>> &il) {
+    auto min_size = std::numeric_limits<typename std::vector<T>::size_type>::max();
+    for (const auto &vec: il) {
+        min_size = std::min(min_size, vec.size());
+    }
+    std::vector<std::vector<T>> combined;
+
+    for (std::size_t i = 0; i < min_size; ++i) {
+        std::vector<symbol> items;
+
+        for (const auto &vec: il) {
+            items.push_back(vec[i]);
+        }
+
+        combined.push_back(items);
+    }
+
+    return combined;
 }
 
-void SetRenderColor(const ren_ptr& renderer, int r, int g, int b, int a) {
-	SDL_SetRenderDrawColor(renderer.get(), r, g, b, a);
+template<class T>
+std::vector<T> concat(const std::initializer_list<std::vector<T>> &il) {
+    typename std::vector<T>::size_type total_size = 0;
+
+    for (const auto &vec: il) {
+        total_size += vec.size();
+    }
+
+    std::vector<T> output;
+    output.reserve(total_size);
+
+    for (const auto &vec: il) {
+        for (const auto &item: vec) {
+            output.push_back(item);
+        }
+    }
+
+    return output;
 }
 
-bool WaitTimeout(int timeout, SDL_EventType type) {
-	SDL_Event e;
-	if (SDL_WaitEventTimeout(&e, timeout)) {
-		if (e.type == type) {
-			return true;
-		}
-	}
-	return false;
+std::vector<std::vector<symbol>> create_frames() {
+    const auto digits = create_digits();
+
+    std::vector<symbol> trs[2][2] = {
+            // "0" -> "0", "0" -> "1"
+            {make_transition_frames(digits[0], digits[0]), make_transition_frames(digits[0], digits[1])},
+            // "1" -> "0", "1" -> "1"
+            {make_transition_frames(digits[1], digits[0]), make_transition_frames(digits[1], digits[1])}
+    };
+
+    return concat({
+                          // "000" -> "001"
+                          combine({
+                                          trs[0][0], trs[0][0], trs[0][1]
+                                  }),
+                          // "001" -> "010"
+                          combine({
+                                          trs[0][0], trs[0][1], trs[1][0]
+                                  }),
+                          // "010" -> "011"
+                          combine({
+                                          trs[0][0], trs[1][1], trs[0][1]
+                                  }),
+                          // "011" -> "100"
+                          combine({
+                                          trs[0][1], trs[1][0], trs[1][0]
+                                  }),
+                          // "100" -> "101"
+                          combine({
+                                          trs[1][1], trs[0][0], trs[0][1]
+                                  }),
+                          // "101" -> "110"
+                          combine({
+                                          trs[1][1], trs[0][1], trs[1][0]
+                                  }),
+                          // "110" -> "111"
+                          combine({
+                                          trs[1][1], trs[1][1], trs[0][1]
+                                  }),
+                          // "111" -> "000"
+                          combine({
+                                          trs[1][0], trs[1][0], trs[1][0]
+                                  }),
+                  });
 }
 
-void WaitUntill(SDL_EventType type) {
-	SDL_Event e;
-	SDL_WaitEvent(&e);
-	while (e.type != type) {
-		SDL_WaitEvent(&e);
-	}
+void main_loop() {
+    sdl::win_ptr window(SDL_CreateWindow("sdl2-sample", 100, 100, 1024, 850, SDL_WINDOW_SHOWN));
+    sdl::ren_ptr renderer(SDL_CreateRenderer(window.get(), -1, SDL_RENDERER_ACCELERATED));
+
+    sdl::clear_render(renderer);
+    sdl::set_render_color(renderer, 255, 0, 0, 0);
+
+    widget w(create_frames());
+    w.move({320, 240});
+
+    bool stop = false;
+
+    while (!stop) {
+        SDL_Event e;
+        SDL_WaitEventTimeout(&e, 2);
+
+        if (e.type == SDL_KEYDOWN && e.key.state == SDL_PRESSED) {
+            switch (e.key.keysym.sym) {
+                case SDLK_LEFT:
+                    w.move_relative({-10, 0});
+                    break;
+                case SDLK_RIGHT:
+                    w.move_relative({10, 0});
+                    break;
+                case SDLK_UP:
+                    w.move_relative({0, -10});
+                    break;
+                case SDLK_DOWN:
+                    w.move_relative({0, 10});
+                    break;
+                case SDLK_PAGEDOWN:
+                    w.rotate(5);
+                    break;
+                case SDLK_PAGEUP:
+                    w.rotate(-5);
+                    break;
+                case SDLK_HOME:
+                    w.scale_up(1.2);
+                    break;
+                case SDLK_END:
+                    w.scale_down(1.2);
+                    break;
+                case SDLK_ESCAPE:
+                    stop = true;
+                    break;
+            }
+        }
+
+        sdl::clear_render(renderer);
+        sdl::set_render_color(renderer, 255, 0, 0, 0);
+        w.draw(renderer);
+
+        SDL_Delay(80);
+    }
 }
 
-void MainLoop() {
-	win_ptr window( SDL_CreateWindow("sdl2-sample", 100, 100, 1024, 850, SDL_WINDOW_SHOWN) );
-	ren_ptr renderer(SDL_CreateRenderer(window.get(), -1, SDL_RENDERER_ACCELERATED));
+int main(int, char **) {
+    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+        std::cout << "SDL_Init Error: " << SDL_GetError() << std::endl;
+        return 1;
+    }
 
-	ClearRender(renderer);
-	SetRenderColor(renderer, 255, 0, 0, 0);
+    main_loop();
 
-	std::vector<Digit> digits = LoadDigits();
-	std::array<std::vector<Digit>, 2> digit_frames = { MakeFrames(digits[0], digits[1]), MakeFrames(digits[1], digits[0]) };
-
-	Widget w;
-	w.Initialize(digit_frames);
-	w.Move(pii(320, 240));
-	bool stop = false;
-	while (!stop) {
-		SDL_Event e;
-		SDL_WaitEventTimeout(&e, 2);
-		if (e.type = SDL_KEYDOWN && e.key.state == SDL_PRESSED) {
-			switch (e.key.keysym.sym) {
-			case SDLK_LEFT:
-				w.MoveRel(pii(-10, 0));
-				break;
-			case SDLK_RIGHT:
-				w.MoveRel(pii(10, 0));
-				break;
-			case SDLK_UP:
-				w.MoveRel(pii(0, -10));
-				break;
-			case SDLK_DOWN:
-				w.MoveRel(pii(0, 10));
-				break;
-			case SDLK_PAGEDOWN:
-				w.Rotate(5);
-				break;
-			case SDLK_PAGEUP:
-				w.Rotate(-5);
-				break;
-			case SDLK_HOME:
-				w.ScaleUp(1.2);
-				break;
-			case SDLK_END:
-				w.ScaleDown(1.2);
-				break;
-			case SDLK_ESCAPE:
-				stop = true;
-				break;
-			}
-		}
-		
-		ClearRender(renderer);
-		SetRenderColor(renderer, 255, 0, 0, 0);
-		w.Draw(renderer);
-		SDL_Delay(80);
-	}
-}
-
-int main(int, char**) {
-	if (SDL_Init(SDL_INIT_VIDEO) != 0) {
-		std::cout << "SDL_Init Error: " << SDL_GetError() << std::endl;
-		return 1;
-	}
-	
-	MainLoop();
-
-	SDL_Quit();
-	return 0;
+    SDL_Quit();
+    return 0;
 }
